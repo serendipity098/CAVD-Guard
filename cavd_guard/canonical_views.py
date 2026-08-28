@@ -5,15 +5,16 @@ import unicodedata
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .constants import (
-    ANCHOR_TRANSLATION,
-    ASCII_CONFUSABLE_TRANSLATION,
-    EMOJI_PATTERN,
-    MASK_TOKEN_PATTERN,
-    RISKY_CANONICAL_TERMS,
-    SINGLE_LETTER_RUN_PATTERN,
-    UBBI_QUESTION_FALLBACK_RE,
-    UBBI_QUESTION_RE,
-    UBBI_VOWEL_PREFIX_RE,
+    ANCHOR_CONFUSABLE_NORMALIZATION,
+    ASCII_CONFUSABLE_NORMALIZATION,
+    BOUNDED_REPAIR_VOCABULARY,
+    FRAGMENTED_LETTER_SEQUENCE_PATTERN,
+    PICTOGRAPHIC_SYMBOL_PATTERN,
+    PLACEHOLDER_TOKEN_PATTERN,
+    QUOTED_PAYLOAD_FALLBACK_PATTERN,
+    RECURRING_AFFIX_MARKER_PATTERN,
+    RECURRING_AFFIX_QUOTED_PAYLOAD_PATTERN,
+    VOWEL_PREFIX_FRAGMENT_PATTERN,
     WORD_PATTERN,
     ZERO_WIDTH_PATTERN,
 )
@@ -32,7 +33,7 @@ def normalize_mask_tokens(text: str) -> str:
         digits = "".join(group for group in match.groups()[1:] if group)
         return f"[MASK{digits}]" if digits else "[MASK]"
 
-    return MASK_TOKEN_PATTERN.sub(repl, text)
+    return PLACEHOLDER_TOKEN_PATTERN.sub(repl, text)
 
 
 def separator_chars(text: str, preferred: Sequence[str]) -> List[str]:
@@ -135,16 +136,16 @@ def fill_masked_instruction(masked_instruction: str, words: Sequence[str]) -> st
     return normalize_space(restored)
 
 
-def restore_artperception(prompt: str, masked_instruction: str) -> str:
+def recover_multi_mask_ascii_instruction(prompt: str, masked_instruction: str) -> str:
     block = extract_ascii_art_block(prompt)
     lengths = extract_word_lengths(prompt)
     words = split_sequence_by_lengths(recover_sequence_from_h_sep(block), lengths)
     return fill_masked_instruction(masked_instruction, words)
 
 
-def extract_artprompt_rows(prompt: str) -> List[str]:
+def extract_single_mask_ascii_rows(prompt: str) -> List[str]:
     text = normalize_prompt(prompt)
-    anchor = text.translate(ANCHOR_TRANSLATION)
+    anchor = text.translate(ANCHOR_CONFUSABLE_NORMALIZATION)
     match = re.search(r"5\.\s*Concatenate.*?\n\s*\n(?P<art>.*?)\n\s*Remember", anchor, flags=re.DOTALL | re.IGNORECASE)
     if match:
         return [line.rstrip("\n") for line in match.group("art").splitlines() if line.strip()]
@@ -153,15 +154,15 @@ def extract_artprompt_rows(prompt: str) -> List[str]:
         rows = [line.rstrip("\n") for line in fenced.group(1).splitlines() if line.strip()]
         if rows:
             return rows
-    raise ValueError("missing ArtPrompt rows")
+    raise ValueError("missing single-mask ASCII rows")
 
 
-def extract_artprompt_length(prompt: str) -> Optional[int]:
+def extract_expected_token_length(prompt: str) -> Optional[int]:
     match = re.search(r"ascii art of\s+(\d+)\s+letters", prompt, flags=re.IGNORECASE)
     return int(match.group(1)) if match else None
 
 
-def split_artprompt_rows(rows: Sequence[str]) -> List[List[str]]:
+def split_single_mask_ascii_rows(rows: Sequence[str]) -> List[List[str]]:
     text = "\n".join(rows)
     best_rows: List[List[str]] = []
     best_score = (0, 0)
@@ -178,12 +179,12 @@ def split_artprompt_rows(rows: Sequence[str]) -> List[List[str]]:
             best_rows = aligned
             best_score = (num_rows, width)
     if not best_rows:
-        raise ValueError("missing separated ArtPrompt rows")
+        raise ValueError("missing separated single-mask ASCII rows")
     return best_rows
 
 
-def recover_artprompt_word(prompt: str) -> str:
-    aligned = split_artprompt_rows(extract_artprompt_rows(prompt))
+def recover_single_mask_ascii_token(prompt: str) -> str:
+    aligned = split_single_mask_ascii_rows(extract_single_mask_ascii_rows(prompt))
     chars: List[str] = []
     for col in range(len(aligned[0])):
         letters = re.findall(r"[A-Za-z]", "\n".join(row[col] for row in aligned))
@@ -195,12 +196,12 @@ def recover_artprompt_word(prompt: str) -> str:
             counts[key] = counts.get(key, 0) + 1
         chars.append(max(counts.items(), key=lambda item: item[1])[0])
     word = "".join(chars)
-    expected = extract_artprompt_length(prompt)
+    expected = extract_expected_token_length(prompt)
     return word[:expected] if expected is not None else word
 
 
-def extract_artprompt_masked_instruction(prompt: str) -> str:
-    anchor = normalize_prompt(prompt).translate(ANCHOR_TRANSLATION)
+def extract_single_mask_instruction(prompt: str) -> str:
+    anchor = normalize_prompt(prompt).translate(ANCHOR_CONFUSABLE_NORMALIZATION)
     patterns = [
         r"After that,\s*(.*?)\s*\(replace\s+\[MASK\]\s+with this word\)\?",
         r"After that,\s*(.*?)\s*\(replace\s+.*?mask.*?with this word\)\?",
@@ -210,7 +211,7 @@ def extract_artprompt_masked_instruction(prompt: str) -> str:
         match = re.search(pattern, anchor, flags=re.DOTALL | re.IGNORECASE)
         if match:
             return normalize_space(match.group(1))
-    raise ValueError("missing ArtPrompt masked instruction")
+    raise ValueError("missing single-mask instruction")
 
 
 def fill_single_mask(masked_instruction: str, word: str) -> str:
@@ -225,26 +226,26 @@ def fill_single_mask(masked_instruction: str, word: str) -> str:
     return normalize_space(mask.sub(word, normalize_prompt(masked_instruction), count=1))
 
 
-def restore_artprompt(prompt: str) -> str:
-    return fill_single_mask(extract_artprompt_masked_instruction(prompt), recover_artprompt_word(prompt))
+def recover_single_mask_ascii_instruction(prompt: str) -> str:
+    return fill_single_mask(extract_single_mask_instruction(prompt), recover_single_mask_ascii_token(prompt))
 
 
 def strip_inline_noise(text: str) -> str:
     clean = unicodedata.normalize("NFKC", text)
     clean = ZERO_WIDTH_PATTERN.sub("", clean)
-    clean = EMOJI_PATTERN.sub("", clean)
+    clean = PICTOGRAPHIC_SYMBOL_PATTERN.sub("", clean)
     clean = re.sub(r"(?<=\w)[_\-`~^|#*@+=:;!?%]+(?=\w)", "", clean)
-    return normalize_space(clean.translate(ASCII_CONFUSABLE_TRANSLATION))
+    return normalize_space(clean.translate(ASCII_CONFUSABLE_NORMALIZATION))
 
 
 def remove_emoji(text: str) -> str:
     clean = ZERO_WIDTH_PATTERN.sub("", unicodedata.normalize("NFKC", text))
-    return normalize_space(EMOJI_PATTERN.sub("", clean))
+    return normalize_space(PICTOGRAPHIC_SYMBOL_PATTERN.sub("", clean))
 
 
 def collapse_spelled_letters(text: str) -> str:
     out = re.sub(r"(?i)\b([a-z])[\s._\-|/]+([a-z])[\s._\-|/]+([a-z])(?:[\s._\-|/]+([a-z])){1,12}\b", lambda m: re.sub(r"[\s._\-|/]+", "", m.group(0)), text)
-    return SINGLE_LETTER_RUN_PATTERN.sub(lambda m: m.group(0).replace(" ", ""), out)
+    return FRAGMENTED_LETTER_SEQUENCE_PATTERN.sub(lambda m: m.group(0).replace(" ", ""), out)
 
 
 def bounded_levenshtein(a: str, b: str, limit: int = 1) -> int:
@@ -272,10 +273,10 @@ def is_adjacent_swap(a: str, b: str) -> bool:
 
 
 def repair_security_keyword(token: str) -> str:
-    lower = token.lower().translate(ASCII_CONFUSABLE_TRANSLATION)
-    if lower in RISKY_CANONICAL_TERMS:
+    lower = token.lower().translate(ASCII_CONFUSABLE_NORMALIZATION)
+    if lower in BOUNDED_REPAIR_VOCABULARY:
         return lower
-    for term in RISKY_CANONICAL_TERMS:
+    for term in BOUNDED_REPAIR_VOCABULARY:
         if abs(len(lower) - len(term)) <= 1 and (is_adjacent_swap(lower, term) or bounded_levenshtein(lower, term, 1) <= 1):
             return term
     return token
@@ -287,7 +288,7 @@ def repair_character_edit_noise(text: str) -> str:
 
 def remove_anomalous_repetition(text: str) -> str:
     clean = ZERO_WIDTH_PATTERN.sub("", unicodedata.normalize("NFKC", text))
-    clean = EMOJI_PATTERN.sub("", clean)
+    clean = PICTOGRAPHIC_SYMBOL_PATTERN.sub("", clean)
     clean = re.sub(r"([^\w\s])\1{2,}", r"\1\1", clean)
     clean = re.sub(r"([A-Za-z])\1{4,}", r"\1\1", clean)
     clean = re.sub(r"[ \t]{3,}", "  ", clean)
@@ -314,10 +315,10 @@ def extract_quoted_payloads(text: str) -> List[Tuple[str, str]]:
     return payloads
 
 
-def extract_ubbi_core(text: str, explicit: Optional[str] = None) -> str:
+def extract_recurring_affix_payload(text: str, explicit: Optional[str] = None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
-    for pattern in (UBBI_QUESTION_RE, UBBI_QUESTION_FALLBACK_RE):
+    for pattern in (RECURRING_AFFIX_QUOTED_PAYLOAD_PATTERN, QUOTED_PAYLOAD_FALLBACK_PATTERN):
         match = pattern.search(text)
         if match:
             return match.group(1).strip()
@@ -327,27 +328,27 @@ def extract_ubbi_core(text: str, explicit: Optional[str] = None) -> str:
     return ""
 
 
-def decode_ubbi(text: str) -> str:
-    return normalize_space(UBBI_VOWEL_PREFIX_RE.sub("", unicodedata.normalize("NFKC", text)))
+def remove_recurring_vowel_prefix(text: str) -> str:
+    return normalize_space(VOWEL_PREFIX_FRAGMENT_PATTERN.sub("", unicodedata.normalize("NFKC", text)))
 
 
-def reconstruct_ubbi_wrapper(text: str, explicit: Optional[str] = None) -> str:
-    core = extract_ubbi_core(text, explicit)
-    if not core:
+def recover_recurring_affix_wrapper(text: str, explicit: Optional[str] = None) -> str:
+    payload = extract_recurring_affix_payload(text, explicit)
+    if not payload:
         return ""
-    decoded = decode_ubbi(core)
-    if not decoded or decoded == core:
+    recovered = remove_recurring_vowel_prefix(payload)
+    if not recovered or recovered == payload:
         return ""
-    return text.replace(core, decoded, 1) if core in text else decoded
+    return text.replace(payload, recovered, 1) if payload in text else recovered
 
 
-def looks_like_artperception(text: str, masked_instruction: Optional[str]) -> bool:
+def looks_like_multi_mask_ascii_layout(text: str, masked_instruction: Optional[str]) -> bool:
     if masked_instruction and re.search(r"\[\s*MASK\s*\d+\s*\]", masked_instruction, flags=re.IGNORECASE):
         return True
     return bool(re.search(r"ASCII\s+art|text\s+art|letter\s+grid", text, flags=re.IGNORECASE) and re.search(r"each word has a length|word\s+length|number of letters|\[\s*MASK", text, flags=re.IGNORECASE))
 
 
-def looks_like_artprompt(text: str) -> bool:
+def looks_like_single_mask_ascii_layout(text: str) -> bool:
     return bool(re.search(r"ascii\s+art|text\s+art|letter\s+grid", text, flags=re.IGNORECASE) and re.search(r"\d+\s+letters|replace\s+.*?mask|mask.*?with\s+this\s+word|\[\s*MASK", text, flags=re.IGNORECASE | re.DOTALL))
 
 
@@ -368,23 +369,23 @@ def collapse_layout_to_lines(text: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def t0_strict_recovery_views(prompt: str, masked_instruction: Optional[str], ubbi_obfuscated_text: Optional[str], refs: List[str], used: set[str]) -> List[Tuple[str, str]]:
+def t0_strict_recovery_views(prompt: str, masked_instruction: Optional[str], recurring_affix_text: Optional[str], refs: List[str], used: set[str]) -> List[Tuple[str, str]]:
     views: List[Tuple[str, str]] = []
-    if masked_instruction and looks_like_artperception(prompt, masked_instruction):
+    if masked_instruction and looks_like_multi_mask_ascii_layout(prompt, masked_instruction):
         try:
-            append_changed(views, "t0_ascii_grid_restored", restore_artperception(prompt, masked_instruction), refs, used)
+            append_changed(views, "t0_multi_mask_ascii_recovered", recover_multi_mask_ascii_instruction(prompt, masked_instruction), refs, used)
         except Exception:
             pass
-    if looks_like_artprompt(prompt):
+    if looks_like_single_mask_ascii_layout(prompt):
         try:
-            append_changed(views, "t0_ascii_mask_restored", restore_artprompt(prompt), refs, used)
+            append_changed(views, "t0_single_mask_ascii_recovered", recover_single_mask_ascii_instruction(prompt), refs, used)
         except Exception:
             pass
-    if len(re.findall(r"(?i)ub", prompt)) >= 2 or ubbi_obfuscated_text:
-        append_changed(views, "t0_ubbi_wrapper_decoded", reconstruct_ubbi_wrapper(prompt, ubbi_obfuscated_text), refs, used)
-        core = extract_ubbi_core(prompt, ubbi_obfuscated_text)
-        if core:
-            append_changed(views, "t0_ubbi_payload_decoded", decode_ubbi(core), refs, used)
+    if len(RECURRING_AFFIX_MARKER_PATTERN.findall(prompt)) >= 2 or recurring_affix_text:
+        append_changed(views, "t0_recurring_affix_wrapper_recovered", recover_recurring_affix_wrapper(prompt, recurring_affix_text), refs, used)
+        payload = extract_recurring_affix_payload(prompt, recurring_affix_text)
+        if payload:
+            append_changed(views, "t0_recurring_affix_payload_recovered", remove_recurring_vowel_prefix(payload), refs, used)
     for name, payload in extract_quoted_payloads(prompt):
         append_changed(views, f"t0_{name}", normalize_mask_tokens(payload), refs, used)
     if masked_instruction:
@@ -414,13 +415,13 @@ def t2_universal_normalization_views(base: str, refs: List[str], used: set[str])
 def build_canonical_views(
     prompt: str,
     masked_instruction: Optional[str] = None,
-    ubbi_obfuscated_text: Optional[str] = None,
+    recurring_affix_text: Optional[str] = None,
 ) -> List[Tuple[str, str]]:
     raw = prompt.strip()
     used: set[str] = set()
     views: List[Tuple[str, str]] = []
     refs = [raw]
-    t0_views = t0_strict_recovery_views(prompt, masked_instruction, ubbi_obfuscated_text, refs, used)
+    t0_views = t0_strict_recovery_views(prompt, masked_instruction, recurring_affix_text, refs, used)
     views.extend(t0_views)
     base = t0_views[0][1] if t0_views else raw
     refs = [raw, base] + [value for _, value in views]
