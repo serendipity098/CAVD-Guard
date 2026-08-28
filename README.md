@@ -35,5 +35,3 @@ print(decision.harmful, decision.cavd.flagged, decision.cavd.avr)
 - `canonical_views.py`: deterministic canonical-view generation.
 - `guards.py`: guard-model wrapper and CAVD-Guard routing.
 - `constants.py`: normalization patterns and bounded character-repair vocabulary.
-
-The default settings follow the paper: terminal layer, `Wlocal=5`, `Wprefix=30`, `alpha=0.1`, and `k=1`.
