@@ -213,13 +213,13 @@ class CAVDGuard:
         self,
         prompt: str,
         masked_instruction: Optional[str] = None,
-        ubbi_obfuscated_text: Optional[str] = None,
+        recurring_affix_text: Optional[str] = None,
     ) -> CAVDDecision:
         cavd = self.score(prompt)
         if not cavd.flagged:
             output = self.guard.classify_one(prompt, "raw")
             return CAVDDecision(output.harmful, cavd, [("raw", prompt.strip())], [output])
-        views = build_canonical_views(prompt, masked_instruction, ubbi_obfuscated_text)
+        views = build_canonical_views(prompt, masked_instruction, recurring_affix_text)
         outputs: List[GuardOutput] = []
         for name, view in views:
             output = self.guard.classify_one(view, name)
